@@ -1,22 +1,19 @@
 using UnityEngine;
-using UnityEngine.AI;
-
-[RequireComponent(typeof(NavMeshAgent))]
 
 public class MarioMovement : MonoBehaviour
 {
-    [SerializeField]
-    private NavMeshAgent agent;
-
+    public Stamina stamina;
 
     [Header("Movement Settings")]
     public float walkSpeed = 3f;
     public float runSpeed = 6f;
+    public float rotationSpeed = 10f;
+    
+    [Header("Camera Reference")]
+    public Transform cameraTransform;
     
     [Header("Animation")]
     public Animator animator;
-    
-    private CharacterController characterController;
     
     [Header("Crouch Settings")]
     public KeyCode crouchKey = KeyCode.C;
@@ -24,36 +21,48 @@ public class MarioMovement : MonoBehaviour
     
     [Header("Jump Settings")]
     public KeyCode jumpKey = KeyCode.Space;
-    public float jumpForce = 5f;
-    public float gravity = -9.81f;
-    public bool useAnimationJump = true;
+    
+    [Header("Ground Settings")]
+    public float groundLevel = 0f; // Set this to your ground height
+    public bool snapToGround = true;
     
     private bool isRunning = false;
     private bool isWalking = false;
-    private bool isGrounded = true;
-    private float verticalVelocity = 0f;
     private bool isCrouching = false;
-    private float lastMovementTime = 0f; // Track when we last moved
+    private float lastMovementTime = 0f;
     
     void Start()
     {
-        agent = GetComponent<NavMeshAgent>();
-
         if (animator == null)
         {
             animator = GetComponent<Animator>();
         }
         
-        characterController = GetComponent<CharacterController>();
-        if (characterController == null)
+        // Auto-find camera if not assigned
+        if (cameraTransform == null)
         {
-            Debug.LogError("Character Controller not found! Please add one to " + gameObject.name);
+            cameraTransform = Camera.main.transform;
+            if (cameraTransform != null)
+            {
+                Debug.Log("Camera automatically found: " + cameraTransform.name);
+            }
+            else
+            {
+                Debug.LogWarning("No camera found! Movement will be world-space.");
+            }
         }
     }
     
     void Update()
     {
-        HandleJump();
+        // Handle jump input (just for animation)
+        if (Input.GetKeyDown(jumpKey))
+        {
+            if (animator != null)
+            {
+                animator.SetTrigger("Jump");
+            }
+        }
         
         // Get input directly
         float moveX = 0f;
@@ -64,13 +73,34 @@ public class MarioMovement : MonoBehaviour
         if (Input.GetKey(KeyCode.A)) moveX = -1f;
         if (Input.GetKey(KeyCode.D)) moveX = 1f;
         
-        // Create movement vector
-        Vector3 movement = new Vector3(moveX, 0f, moveZ).normalized;
+        // Create movement vector RELATIVE TO CAMERA
+        Vector3 movement = Vector3.zero;
         
-        // Check if C key is being held (check this FIRST before checking movement)
+        if (cameraTransform != null)
+        {
+            // Get camera's forward and right directions (ignore Y axis)
+            Vector3 cameraForward = cameraTransform.forward;
+            Vector3 cameraRight = cameraTransform.right;
+            
+            // Flatten the vectors (remove Y component to keep movement on ground)
+            cameraForward.y = 0f;
+            cameraRight.y = 0f;
+            cameraForward.Normalize();
+            cameraRight.Normalize();
+            
+            // Calculate movement relative to camera
+            movement = (cameraForward * moveZ + cameraRight * moveX).normalized;
+        }
+        else
+        {
+            // Fallback to world space if no camera
+            movement = new Vector3(moveX, 0f, moveZ).normalized;
+        }
+        
+        // Check if C key is being held
         bool pressingCrouch = Input.GetKey(crouchKey);
         
-        // Check if moving (AFTER we know if crouch is pressed)
+        // Check if moving
         bool hasMovementInput = movement.magnitude > 0.1f;
         
         // Update last movement time if we have input
@@ -79,16 +109,16 @@ public class MarioMovement : MonoBehaviour
             lastMovementTime = Time.time;
         }
         
-        // Consider "moving" if we have input OR recently had input (0.1 second buffer)
+        // Consider "moving" if we have input OR recently had input
         bool isMoving = hasMovementInput || (Time.time - lastMovementTime < 0.1f);
         
-        // Crouch walking: C is held AND moving (with buffer)
+        // Crouch walking
         bool isCrouchWalking = pressingCrouch && (hasMovementInput || (pressingCrouch && Time.time - lastMovementTime < 0.15f));
         isCrouching = isCrouchWalking;
         
-        // Can't run while crouching
+        // Running (can't run while crouching, and need stamina)
         bool shiftPressed = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
-        isRunning = isMoving && shiftPressed && !pressingCrouch;
+        isRunning = isMoving && shiftPressed && !pressingCrouch && stamina != null && stamina.currentStamina > 0;
         isWalking = isMoving && !isRunning && !pressingCrouch;
         
         // Choose speed
@@ -96,30 +126,41 @@ public class MarioMovement : MonoBehaviour
         if (isCrouchWalking)
         {
             currentSpeed = crouchSpeed;
+            if (stamina != null) stamina.isUsingStamina = false;
         }
         else if (isRunning)
         {
             currentSpeed = runSpeed;
+            if (stamina != null) stamina.isUsingStamina = true;
         }
         else
         {
             currentSpeed = walkSpeed;
+            if (stamina != null) stamina.isUsingStamina = false;
         }
         
-        // Move the character
-        if (isMoving && characterController != null)
+        // Move the character - simple transform movement
+        if (isMoving)
         {
-
             Vector3 move = movement * currentSpeed * Time.deltaTime;
-            characterController.Move(move);
+            move.y = 0; // Keep on same height
+            transform.position += move;
             
             // Rotate to face direction
-            Quaternion targetRotation = Quaternion.LookRotation(movement);
-            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, Time.deltaTime * 10f);
+            if (movement.magnitude > 0.1f)
+            {
+                Quaternion targetRotation = Quaternion.LookRotation(movement);
+                transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, Time.deltaTime * 10f);
+            }
         }
         
-        // Apply vertical movement (jumping/falling)
-        ApplyVerticalMovement();
+        // Snap to ground level if enabled
+        if (snapToGround)
+        {
+            Vector3 pos = transform.position;
+            pos.y = groundLevel;
+            transform.position = pos;
+        }
         
         // Update animation
         if (animator != null)
@@ -127,98 +168,8 @@ public class MarioMovement : MonoBehaviour
             animator.SetBool("IsWalking", isWalking);
             animator.SetBool("IsRunning", isRunning);
             animator.SetBool("IsCrouchWalking", isCrouchWalking);
-            animator.SetBool("IsGrounded", isGrounded);
+            animator.SetBool("IsGrounded", true); // Always grounded in this simple version
             animator.SetFloat("Speed", isMoving ? currentSpeed : 0f);
-        }
-        
-        // Debug - MORE DETAILED
-        Debug.Log($"moveX: {moveX}, moveZ: {moveZ}, movement.magnitude: {movement.magnitude}, pressingCrouch: {pressingCrouch}, isMoving: {isMoving}, CrouchWalking: {isCrouchWalking}");
-    }
-    
-    void HandleJump()
-    {
-        // Check if grounded using Character Controller
-        if (characterController != null)
-        {
-            isGrounded = characterController.isGrounded;
-            
-            // Additional raycast check if Character Controller says not grounded
-            if (!isGrounded)
-            {
-                RaycastHit hit;
-                isGrounded = Physics.Raycast(transform.position + Vector3.up * 0.1f, Vector3.down, out hit, 0.3f);
-            }
-        }
-        else
-        {
-            // Fallback raycast method
-            RaycastHit hit;
-            isGrounded = Physics.Raycast(transform.position, Vector3.down, out hit, 1.1f);
-        }
-        
-        // Jump when space is pressed and grounded
-        if (Input.GetKeyDown(jumpKey) && isGrounded)
-        {
-            Debug.Log("Jumping!");
-            
-            if (useAnimationJump)
-            {
-                // Only trigger animation, let animation handle the movement
-                if (animator != null)
-                {
-                    animator.SetTrigger("Jump");
-                }
-            }
-            else
-            {
-                // Use physics-based jump
-                verticalVelocity = jumpForce;
-                if (animator != null)
-                {
-                    animator.SetTrigger("Jump");
-                }
-            }
-        }
-    }
-    
-    void ApplyVerticalMovement()
-    {
-        // Only apply gravity/physics if NOT using animation-based jump
-        if (!useAnimationJump)
-        {
-            // Apply gravity
-            if (!isGrounded)
-            {
-                verticalVelocity += gravity * Time.deltaTime;
-            }
-            else
-            {
-                // Reset vertical velocity when grounded
-                if (verticalVelocity < 0)
-                {
-                    verticalVelocity = -2f;
-                }
-            }
-            
-            // Move character vertically using Character Controller
-            if (characterController != null)
-            {
-                Vector3 verticalMove = Vector3.up * verticalVelocity * Time.deltaTime;
-                characterController.Move(verticalMove);
-            }
-            else
-            {
-                transform.Translate(Vector3.up * verticalVelocity * Time.deltaTime, Space.World);
-            }
-        }
-        else
-        {
-            // Apply small constant downward force to maintain ground contact
-            if (characterController != null)
-            {
-                Vector3 downForce = Vector3.down * 2f * Time.deltaTime;
-                characterController.Move(downForce);
-            }
         }
     }
 }

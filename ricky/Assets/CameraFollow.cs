@@ -2,101 +2,133 @@ using UnityEngine;
 
 public class CameraFollow : MonoBehaviour
 {
-    [Header("Target")]
-    public Transform target; // The character to follow (Mario)
-    
-    [Header("Camera Settings")]
-    public Vector3 offset = new Vector3(0f, 5f, -10f); // Camera position relative to target
-    public float smoothSpeed = 0.125f; // How smooth the camera follows
-    public bool lookAtTarget = true; // Should camera always look at the target?
-    
-    [Header("Optional: Mouse Look")]
-    public bool enableMouseLook = false;
-    public float mouseSensitivity = 2f;
-    
-    private float rotationX = 0f;
-    private float rotationY = 0f;
-    
+    public Transform target;
+
+    [Header("Distance (Zoom)")]
+    public float distance = 4f;
+    public float minDistance = 2f;
+    public float maxDistance = 7f;
+    public float zoomSpeed = 2f;
+
+    [Header("Height")]
+    public float height = 2.5f;
+
+    [Header("Rotation")]
+    public float mouseSensitivity = 3f;
+    public float minY = -30f;
+    public float maxY = 60f;
+
+    [Header("Smooth")]
+    public float followSpeed = 10f;
+
+    [Header("Collision")]
+    public bool enableCollision = true;
+    public float collisionOffset = 0.3f;
+    public LayerMask collisionLayers = -1; // Check all layers by default
+
+    private float yaw;
+    private float pitch;
+    private float currentDistance;
+
     void Start()
     {
-        // If no target assigned, try to find Mario
-        if (target == null)
+        if (!target)
         {
-            GameObject mario = GameObject.Find("Mario2");
-            if (mario != null)
+            GameObject player = GameObject.FindGameObjectWithTag("Player");
+            if (player != null)
             {
-                target = mario.transform;
-                Debug.Log("Camera target set to: " + mario.name);
+                target = player.transform;
+                Debug.Log("Camera auto-found target: " + player.name);
             }
             else
             {
-                Debug.LogError("No target found! Please assign a target in the Inspector.");
+                Debug.LogError("Camera has no target!");
+                enabled = false;
+                return;
             }
         }
-        
-        // Initialize rotation if using mouse look
-        if (enableMouseLook)
-        {
-            Vector3 rot = transform.eulerAngles;
-            rotationX = rot.x;
-            rotationY = rot.y;
-        }
+
+        Vector3 angles = transform.eulerAngles;
+        yaw = angles.y;
+        pitch = angles.x;
+        currentDistance = distance;
+
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
     }
-    
+
     void LateUpdate()
     {
-        if (target == null) return;
-        
-        if (enableMouseLook)
+        if (!target) return;
+
+        // Unlock cursor with ESC
+        if (Input.GetKeyDown(KeyCode.Escape))
         {
-            // Mouse look camera
-            FollowWithMouseLook();
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
         }
-        else
+
+        // Re-lock cursor on click
+        if (Input.GetMouseButtonDown(0) && Cursor.lockState == CursorLockMode.None)
         {
-            // Simple follow camera
-            FollowTarget();
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
         }
-    }
-    
-    void FollowTarget()
-    {
-        // Calculate desired position
-        Vector3 desiredPosition = target.position + offset;
-        
-        // Smoothly move camera to desired position
-        Vector3 smoothedPosition = Vector3.Lerp(transform.position, desiredPosition, smoothSpeed);
-        transform.position = smoothedPosition;
-        
-        // Look at the target
-        if (lookAtTarget)
+
+        // Only rotate if cursor is locked
+        if (Cursor.lockState == CursorLockMode.Locked)
         {
-            transform.LookAt(target);
+            yaw += Input.GetAxis("Mouse X") * mouseSensitivity;
+            pitch -= Input.GetAxis("Mouse Y") * mouseSensitivity;
+            pitch = Mathf.Clamp(pitch, minY, maxY);
         }
-    }
-    
-    void FollowWithMouseLook()
-    {
-        // Get mouse input
-        float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity;
-        float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity;
-        
-        rotationY += mouseX;
-        rotationX -= mouseY;
-        rotationX = Mathf.Clamp(rotationX, -90f, 90f); // Limit vertical rotation
-        
+
+        // Zoom
+        float scroll = Input.GetAxis("Mouse ScrollWheel");
+        distance -= scroll * zoomSpeed;
+        distance = Mathf.Clamp(distance, minDistance, maxDistance);
+
         // Calculate rotation
-        Quaternion rotation = Quaternion.Euler(rotationX, rotationY, 0f);
-        
-        // Calculate position based on rotation and offset
-        Vector3 desiredPosition = target.position - (rotation * Vector3.forward * offset.magnitude);
-        desiredPosition.y = target.position.y + offset.y;
-        
-        // Apply smoothing
-        Vector3 smoothedPosition = Vector3.Lerp(transform.position, desiredPosition, smoothSpeed);
-        transform.position = smoothedPosition;
-        
+        Quaternion rotation = Quaternion.Euler(pitch, yaw, 0);
+
+        // Target position for the camera to look at
+        Vector3 targetLookPoint = target.position + Vector3.up * height;
+
+        // Calculate desired camera position
+        Vector3 offset = rotation * new Vector3(0, 0, -distance);
+        Vector3 desiredPos = targetLookPoint + offset;
+
+        // Apply collision detection
+        if (enableCollision)
+        {
+            Vector3 direction = desiredPos - targetLookPoint;
+            float desiredDistance = direction.magnitude;
+
+            RaycastHit hit;
+            if (Physics.Raycast(targetLookPoint, direction.normalized, out hit, desiredDistance, collisionLayers))
+            {
+                // Camera hit something, move it closer
+                currentDistance = Mathf.Lerp(currentDistance, hit.distance - collisionOffset, followSpeed * Time.deltaTime);
+            }
+            else
+            {
+                // No obstruction, return to desired distance
+                currentDistance = Mathf.Lerp(currentDistance, distance, followSpeed * Time.deltaTime);
+            }
+
+            // Recalculate position with adjusted distance
+            offset = rotation * new Vector3(0, 0, -currentDistance);
+            desiredPos = targetLookPoint + offset;
+        }
+
+        // Smooth follow
+        transform.position = Vector3.Lerp(
+            transform.position,
+            desiredPos,
+            followSpeed * Time.deltaTime
+        );
+
         // Look at target
-        transform.LookAt(target.position + Vector3.up * offset.y);
+        transform.LookAt(targetLookPoint);
     }
 }
