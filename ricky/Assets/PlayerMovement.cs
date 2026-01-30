@@ -10,12 +10,23 @@ public class ZombieAI : MonoBehaviour
     public float detectionRange = 15f;
     public float attackRange = 2f;
     public float chaseSpeed = 3f;
+    public float wanderSpeed = 1.5f;
     public float rotationSpeed = 5f;
+    
+    [Header("Wandering")]
+    public float wanderRadius = 10f;
+    public float wanderTimer = 5f;
+    private float wanderCooldown;
+    private Vector3 wanderTarget;
     
     [Header("Attack Settings")]
     public float attackCooldown = 2f;
     private float lastAttackTime = 0f;
     public float attackDuration = 1f;
+    
+    [Header("Physics")]
+    public float gravity = -20f;
+    private Vector3 velocity;
     
     [Header("Animation")]
     public Animator anim;
@@ -23,10 +34,15 @@ public class ZombieAI : MonoBehaviour
     private CharacterController characterController;
     private bool isAttacking = false;
     private bool isDead = false;
+    private Vector3 startPosition;
+    
+    // AI States
+    private enum AIState { Wandering, Chasing, Attacking, Idle }
+    private AIState currentState = AIState.Wandering;
     
     void Start()
     {
-        // Get or add Character Controller (same as Mario)
+        // Get or add Character Controller
         characterController = GetComponent<CharacterController>();
         if (characterController == null)
         {
@@ -34,14 +50,14 @@ public class ZombieAI : MonoBehaviour
             Debug.Log("Added Character Controller to zombie");
         }
         
-        // Configure Character Controller (same settings as Mario)
+        // Configure Character Controller
         characterController.radius = 0.5f;
         characterController.height = 2f;
         characterController.center = new Vector3(0, 1, 0);
         characterController.slopeLimit = 45f;
         characterController.stepOffset = 0.3f;
         
-        // Remove Rigidbody if it exists (Mario doesn't have one)
+        // Remove Rigidbody if it exists
         Rigidbody rb = GetComponent<Rigidbody>();
         if (rb != null)
         {
@@ -72,68 +88,139 @@ public class ZombieAI : MonoBehaviour
             }
         }
         
+        // Store starting position for wandering
+        startPosition = transform.position;
+        
+        // Initialize wandering
+        wanderCooldown = wanderTimer;
+        SetNewWanderTarget();
+        
         Debug.Log("Zombie initialized at position: " + transform.position);
     }
     
     void Update()
     {
-        if (isDead || target == null) return;
+        if (isDead) return;
         
-        float distanceToMario = Vector3.Distance(transform.position, target.position);
-        
-        // Check if can see Mario
-        if (distanceToMario <= detectionRange)
+        // Apply gravity
+        if (characterController.isGrounded)
         {
-            // Calculate direction to Mario
-            Vector3 direction = (target.position - transform.position);
-            direction.y = 0; // Keep on same level
+            velocity.y = -2f; // Small downward force to keep grounded
+        }
+        else
+        {
+            velocity.y += gravity * Time.deltaTime;
+        }
+        characterController.Move(velocity * Time.deltaTime);
+        
+        // Check distance to Mario
+        float distanceToMario = float.MaxValue;
+        if (target != null)
+        {
+            distanceToMario = Vector3.Distance(transform.position, target.position);
+        }
+        
+        // State Machine
+        if (target != null && distanceToMario <= attackRange && !isAttacking)
+        {
+            // ATTACKING STATE
+            currentState = AIState.Attacking;
+            if (Time.time >= lastAttackTime + attackCooldown)
+            {
+                Attack();
+            }
+            else
+            {
+                if (anim != null) anim.SetBool("isWalking", false);
+            }
+        }
+        else if (target != null && distanceToMario <= detectionRange)
+        {
+            // CHASING STATE
+            currentState = AIState.Chasing;
+            if (!isAttacking)
+            {
+                Vector3 direction = (target.position - transform.position);
+                direction.y = 0;
+                
+                // Rotate to face Mario
+                if (direction.magnitude > 0.1f)
+                {
+                    Quaternion targetRotation = Quaternion.LookRotation(direction);
+                    transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
+                }
+                
+                Chase(direction.normalized);
+            }
+            else
+            {
+                if (anim != null) anim.SetBool("isWalking", false);
+            }
+        }
+        else
+        {
+            // WANDERING STATE
+            if (!isAttacking)
+            {
+                currentState = AIState.Wandering;
+                Wander();
+            }
+        }
+    }
+    
+    void Wander()
+    {
+        // Check if reached wander target
+        Vector3 directionToWander = wanderTarget - transform.position;
+        directionToWander.y = 0;
+        float distanceToWander = directionToWander.magnitude;
+        
+        if (distanceToWander < 1f)
+        {
+            // Reached target, wait then pick new target
+            wanderCooldown -= Time.deltaTime;
+            if (wanderCooldown <= 0)
+            {
+                SetNewWanderTarget();
+                wanderCooldown = wanderTimer;
+            }
             
-            // Rotate to face Mario
+            if (anim != null) anim.SetBool("isWalking", false);
+        }
+        else
+        {
+            // Move towards wander target
+            Vector3 direction = directionToWander.normalized;
+            
+            // Rotate towards target
             if (direction.magnitude > 0.1f)
             {
                 Quaternion targetRotation = Quaternion.LookRotation(direction);
                 transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
             }
             
-            // Attack if close enough
-            if (distanceToMario <= attackRange && !isAttacking)
-            {
-                if (Time.time >= lastAttackTime + attackCooldown)
-                {
-                    Attack();
-                }
-                else
-                {
-                    // Waiting for cooldown - stop moving
-                    if (anim != null) anim.SetBool("isWalking", false);
-                }
-            }
-            // Chase if too far
-            else if (!isAttacking)
-            {
-                Chase(direction.normalized);
-            }
-            else
-            {
-                // Attacking - stop moving
-                if (anim != null) anim.SetBool("isWalking", false);
-            }
+            // Move
+            Vector3 move = direction * wanderSpeed * Time.deltaTime;
+            characterController.Move(move);
+            
+            if (anim != null) anim.SetBool("isWalking", true);
         }
-        else
-        {
-            // Too far - idle
-            if (anim != null) anim.SetBool("isWalking", false);
-        }
+    }
+    
+    void SetNewWanderTarget()
+    {
+        // Pick a random point around the starting position
+        Vector2 randomCircle = Random.insideUnitCircle * wanderRadius;
+        wanderTarget = startPosition + new Vector3(randomCircle.x, 0, randomCircle.y);
         
-        // NO GRAVITY APPLICATION - just like Mario's script!
-        // The CharacterController handles ground detection automatically
+        Debug.Log("Zombie picked new wander target: " + wanderTarget);
     }
     
     void Chase(Vector3 direction)
     {
         if (characterController == null) return;
         
-        // Move towards Mario (same method as Mario's movement)
+        // Move towards Mario
         Vector3 move = direction * chaseSpeed * Time.deltaTime;
         characterController.Move(move);
         
@@ -163,7 +250,7 @@ public class ZombieAI : MonoBehaviour
     {
         isAttacking = false;
         if (anim != null) anim.SetBool("isHitting", false);
-        Debug.Log("Attack ended, back to chasing");
+        Debug.Log("Attack ended, back to behavior");
     }
     
     public void Die()
@@ -192,6 +279,19 @@ public class ZombieAI : MonoBehaviour
         // Attack range (red)
         Gizmos.color = Color.red;
         Gizmos.DrawWireSphere(transform.position, attackRange);
+        
+        // Wander radius (blue) - from start position
+        Gizmos.color = Color.blue;
+        Vector3 drawPos = Application.isPlaying ? startPosition : transform.position;
+        Gizmos.DrawWireSphere(drawPos, wanderRadius);
+        
+        // Current wander target (cyan)
+        if (Application.isPlaying)
+        {
+            Gizmos.color = Color.cyan;
+            Gizmos.DrawWireSphere(wanderTarget, 0.5f);
+            Gizmos.DrawLine(transform.position, wanderTarget);
+        }
         
         // Line to target
         if (target != null)
