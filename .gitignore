@@ -1,0 +1,19 @@
+# Unity folders
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+UserSettings/
+
+# Visual Studio / Rider
+.vs/
+*.csproj
+*.sln
+*.user
+*.userprefs
+
+# OS
+.DS_Store
+Thumbs.db
